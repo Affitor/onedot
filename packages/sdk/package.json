@@ -16,7 +16,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@onedot/core": "workspace:*"
+    "@onedot/core": "0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.8.0"
