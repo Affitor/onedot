@@ -1,4 +1,4 @@
-import { OneDotEngine, createDatabase } from '@onedot/core'
+import { OneDotEngine, createDatabase } from '@one-dot/core'
 import type {
   CreateProgramInput,
   CreatePartnerInput,
@@ -7,7 +7,7 @@ import type {
   RecordSaleInput,
   EventType,
   EventListener,
-} from '@onedot/core'
+} from '@one-dot/core'
 
 export interface OneDotConfig {
   /** Self-hosted mode: provide your PostgreSQL connection string. OneDot creates od_* tables in your database. */
@@ -151,6 +151,11 @@ class SalesAPI {
   record(input: RecordSaleInput) {
     return this.engine.recordSale(input)
   }
+
+  /** Reverse commissions for a refunded sale (by externalId). */
+  refund(externalId: string) {
+    return this.engine.refundSale(externalId)
+  }
 }
 
 class CommissionsAPI {
@@ -187,4 +192,4 @@ export type {
   EventType,
   EventListener,
   OneDotEvent,
-} from '@onedot/core'
+} from '@one-dot/core'

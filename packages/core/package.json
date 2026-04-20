@@ -1,6 +1,7 @@
 {
-  "name": "@onedot/core",
-  "version": "0.1.0",
+  "name": "@one-dot/core",
+  "version": "0.1.2",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

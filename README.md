@@ -7,7 +7,7 @@ Every partner network starts with one dot.
 ## Install
 
 ```bash
-npm install @onedot/sdk
+npm install @one-dot/sdk
 ```
 
 Requires PostgreSQL. OneDot creates tables prefixed with `od_` in your existing database.
@@ -17,7 +17,7 @@ Requires PostgreSQL. OneDot creates tables prefixed with `od_` in your existing 
 ### 1. Initialize
 
 ```typescript
-import { OneDot } from '@onedot/sdk'
+import { OneDot } from '@one-dot/sdk'
 
 const onedot = new OneDot({
   databaseUrl: process.env.DATABASE_URL,
@@ -225,7 +225,7 @@ Available events:
 OneDot also exposes a REST API for use from non-Node environments or as a standalone service.
 
 ```typescript
-import { createServer } from '@onedot/core/api/server'
+import { createServer } from '@one-dot/core/api/server'
 
 const { server, engine } = createServer({
   databaseUrl: process.env.DATABASE_URL,

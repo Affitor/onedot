@@ -399,6 +399,56 @@ export class OneDotEngine {
     return updated
   }
 
+  /**
+   * Reverse commissions for a refunded sale.
+   * Finds the sale by externalId, marks its commissions as rejected with reason "refund".
+   */
+  async refundSale(externalId: string): Promise<{ reversed: number }> {
+    // Find the sale
+    const sale = await this.db.query.odSales.findFirst({
+      where: eq(odSales.externalId, externalId),
+    })
+    if (!sale) return { reversed: 0 }
+
+    // Find pending/approved commissions for this sale
+    const commissions = await this.db.query.odCommissions.findMany({
+      where: and(
+        eq(odCommissions.saleId, sale.id),
+        sql`${odCommissions.status} IN ('pending', 'approved')`,
+      ),
+    })
+
+    let reversed = 0
+    for (const commission of commissions) {
+      await this.db.update(odCommissions).set({
+        status: 'rejected',
+        rejectedAt: new Date(),
+        rejectionReason: 'refund',
+      }).where(eq(odCommissions.id, commission.id))
+
+      // Reverse partner balance
+      await this.db.update(odPartners).set({
+        balanceCents: sql`${odPartners.balanceCents} - ${commission.amountCents}`,
+        lifetimeEarningsCents: sql`${odPartners.lifetimeEarningsCents} - ${commission.amountCents}`,
+        updatedAt: new Date(),
+      }).where(eq(odPartners.id, commission.partnerId))
+
+      // Ledger entry
+      await this.db.insert(odTransactions).values({
+        partnerId: commission.partnerId,
+        type: 'commission_rejected',
+        amountCents: -commission.amountCents,
+        commissionId: commission.id,
+        description: `Refund reversal — sale ${sale.externalId}`,
+      })
+
+      await this.emit('commission.rejected', { commission })
+      reversed++
+    }
+
+    return { reversed }
+  }
+
   async listCommissions(filters: {
     partnerId?: string
     programId?: string
