@@ -112,30 +112,30 @@ This is idempotent — calling it twice for the same customer+program does nothi
 
 ### Touch point 3: Record sales
 
-When a referred customer spends money, record the sale. Commission is calculated automatically.
+When a referred customer makes a **purchase** (payment, subscription, credit top-up), record the sale. Commission is calculated automatically.
 
 ```typescript
-// In your billing/payment handler
-const { sale, commission, created } = await onedot.sales.record({
-  customerId: user.id,
-  amountCents: 500,           // $5.00 in cents
-  externalId: paymentId,      // idempotency key
-})
+// In your Stripe webhook handler (or any payment callback)
+// This runs when a customer PAYS — not when they use/consume.
 
-// commission is null if the customer wasn't referred
-// commission.amountCents = 100 (20% of $5.00)
+case 'checkout.session.completed': {
+  const session = event.data.object
+  const userId = session.metadata.user_id
+
+  const { sale, commission, created } = await onedot.sales.record({
+    customerId: userId,
+    amountCents: session.amount_total,    // what they paid
+    currency: session.currency,
+    externalId: session.payment_intent,   // idempotency key
+  })
+
+  // commission is null if the customer wasn't referred
+  // commission.amountCents = 400 (20% of $20.00 purchase)
+  break
+}
 ```
 
-For usage-based billing (like API platforms), call this on every billable event:
-
-```typescript
-// Per-request billing
-await onedot.sales.record({
-  customerId: user.id,
-  amountCents: Math.round(requestCost * 100),
-  externalId: requestId, // prevents double-counting
-})
-```
+Commission is on **purchases**, not on usage. A customer buying $20 in credits generates a $4 commission. What they do with those credits afterwards is irrelevant.
 
 ### Touch point 4: Show earnings
 
