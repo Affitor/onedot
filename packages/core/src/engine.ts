@@ -1,4 +1,4 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, gt } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import type { Database } from './db.js'
 import {
@@ -54,7 +54,7 @@ export class OneDotEngine {
   // ─── Programs ───────────────────────────────────────────
 
   async createProgram(input: CreateProgramInput) {
-    const [program] = await this.db.insert(odPrograms).values({
+    const values: Record<string, unknown> = {
       name: input.name,
       slug: input.slug || slugify(input.name),
       description: input.description,
@@ -64,13 +64,23 @@ export class OneDotEngine {
       cookieDays: input.cookieDays ?? 30,
       holdDays: input.holdDays ?? 14,
       autoApprove: input.autoApprove ?? true,
-    }).returning()
+    }
+    // Allow custom ID (e.g. "prg_kyma_referral") — otherwise auto-generated
+    if (input.id) values.id = input.id
+
+    const [program] = await this.db.insert(odPrograms).values(values as any).returning()
     return program
   }
 
   async getProgram(id: string) {
     return this.db.query.odPrograms.findFirst({
       where: eq(odPrograms.id, id),
+    })
+  }
+
+  async getProgramBySlug(slug: string) {
+    return this.db.query.odPrograms.findFirst({
+      where: eq(odPrograms.slug, slug),
     })
   }
 
@@ -84,14 +94,16 @@ export class OneDotEngine {
 
   async createPartner(input: CreatePartnerInput) {
     const code = input.code || nanoid(8).toLowerCase()
-    const [partner] = await this.db.insert(odPartners).values({
+    const values: Record<string, unknown> = {
       programId: input.programId,
       code,
       name: input.name,
       email: input.email,
       metadata: input.metadata,
-    }).returning()
+    }
+    if (input.id) values.id = input.id
 
+    const [partner] = await this.db.insert(odPartners).values(values as any).returning()
     await this.emit('partner.created', { partner })
     return partner
   }
@@ -205,6 +217,19 @@ export class OneDotEngine {
         where: eq(odClicks.id, input.clickId),
       })
       if (!click) throw new Error(`Click not found: ${input.clickId}`)
+
+      // Enforce cookie window — check if click is still within attribution period
+      const program = await this.getProgram(click.programId)
+      if (program) {
+        const cookieMs = (program.cookieDays || 30) * 86400000
+        const clickAge = Date.now() - click.createdAt.getTime()
+        if (clickAge > cookieMs) {
+          throw new Error(
+            `Click ${input.clickId} expired — ${program.cookieDays}-day attribution window exceeded`
+          )
+        }
+      }
+
       partnerId = click.partnerId
 
       // Mark click as converted
@@ -270,27 +295,36 @@ export class OneDotEngine {
     const program = await this.getProgram(referral.programId)
     if (!program) throw new Error(`Program not found: ${referral.programId}`)
 
-    // Insert sale
-    const [sale] = await this.db.insert(odSales).values({
-      referralId: referral.id,
-      partnerId: referral.partnerId,
-      programId: referral.programId,
-      customerId: input.customerId,
-      amountCents: input.amountCents,
-      currency: input.currency || 'usd',
-      externalId: input.externalId,
-      metadata: input.metadata,
-    }).returning()
+    // Atomic: insert sale + calculate commission in one transaction
+    const result = await this.db.transaction(async (tx) => {
+      // Insert sale
+      const [sale] = await tx.insert(odSales).values({
+        referralId: referral.id,
+        partnerId: referral.partnerId,
+        programId: referral.programId,
+        customerId: input.customerId,
+        amountCents: input.amountCents,
+        currency: input.currency || 'usd',
+        externalId: input.externalId,
+        metadata: input.metadata,
+      }).returning()
 
-    await this.emit('sale.created', { sale })
+      // Calculate commission atomically
+      const commission = await this.calculateCommission(tx, sale, program)
 
-    // Calculate commission
-    const commission = await this.calculateCommission(sale, program)
+      return { sale, commission }
+    })
 
-    return { sale, commission, created: true }
+    await this.emit('sale.created', { sale: result.sale })
+    if (result.commission) {
+      await this.emit('commission.created', { commission: result.commission, sale: result.sale })
+    }
+
+    return { ...result, created: true }
   }
 
   private async calculateCommission(
+    tx: Parameters<Parameters<Database['transaction']>[0]>[0],
     sale: typeof odSales.$inferSelect,
     program: typeof odPrograms.$inferSelect,
   ) {
@@ -307,7 +341,8 @@ export class OneDotEngine {
       ? new Date(Date.now() + program.holdDays * 86400000)
       : null
 
-    const [commission] = await this.db.insert(odCommissions).values({
+    // All three writes in one transaction
+    const [commission] = await tx.insert(odCommissions).values({
       saleId: sale.id,
       partnerId: sale.partnerId,
       programId: sale.programId,
@@ -318,8 +353,7 @@ export class OneDotEngine {
       holdUntil,
     }).returning()
 
-    // Ledger entry
-    await this.db.insert(odTransactions).values({
+    await tx.insert(odTransactions).values({
       partnerId: sale.partnerId,
       type: 'commission_earned',
       amountCents,
@@ -327,14 +361,11 @@ export class OneDotEngine {
       description: `Commission on sale ${sale.id}`,
     })
 
-    // Update partner lifetime earnings
-    await this.db.update(odPartners).set({
+    await tx.update(odPartners).set({
       lifetimeEarningsCents: sql`${odPartners.lifetimeEarningsCents} + ${amountCents}`,
       balanceCents: sql`${odPartners.balanceCents} + ${amountCents}`,
       updatedAt: new Date(),
     }).where(eq(odPartners.id, sale.partnerId))
-
-    await this.emit('commission.created', { commission, sale })
 
     return commission
   }
@@ -342,75 +373,76 @@ export class OneDotEngine {
   // ─── Commission Management ──────────────────────────────
 
   async approveCommission(commissionId: string) {
-    const [commission] = await this.db.update(odCommissions).set({
-      status: 'approved',
-      approvedAt: new Date(),
-    }).where(
-      and(
-        eq(odCommissions.id, commissionId),
-        eq(odCommissions.status, 'pending'),
-      )
-    ).returning()
+    return this.db.transaction(async (tx) => {
+      const [commission] = await tx.update(odCommissions).set({
+        status: 'approved',
+        approvedAt: new Date(),
+      }).where(
+        and(
+          eq(odCommissions.id, commissionId),
+          eq(odCommissions.status, 'pending'),
+        )
+      ).returning()
 
-    if (!commission) throw new Error(`Commission not found or not pending: ${commissionId}`)
+      if (!commission) throw new Error(`Commission not found or not pending: ${commissionId}`)
 
-    await this.db.insert(odTransactions).values({
-      partnerId: commission.partnerId,
-      type: 'commission_approved',
-      amountCents: 0, // no money movement, just status change
-      commissionId: commission.id,
-      description: `Commission ${commission.id} approved`,
+      await tx.insert(odTransactions).values({
+        partnerId: commission.partnerId,
+        type: 'commission_approved',
+        amountCents: 0,
+        commissionId: commission.id,
+        description: `Commission ${commission.id} approved`,
+      })
+
+      await this.emit('commission.approved', { commission })
+      return commission
     })
-
-    await this.emit('commission.approved', { commission })
-    return commission
   }
 
   async rejectCommission(commissionId: string, reason?: string) {
-    const commission = await this.db.query.odCommissions.findFirst({
-      where: eq(odCommissions.id, commissionId),
+    return this.db.transaction(async (tx) => {
+      const commission = await tx.query.odCommissions.findFirst({
+        where: eq(odCommissions.id, commissionId),
+      })
+      if (!commission || commission.status !== 'pending') {
+        throw new Error(`Commission not found or not pending: ${commissionId}`)
+      }
+
+      const [updated] = await tx.update(odCommissions).set({
+        status: 'rejected',
+        rejectedAt: new Date(),
+        rejectionReason: reason,
+      }).where(eq(odCommissions.id, commissionId)).returning()
+
+      await tx.update(odPartners).set({
+        balanceCents: sql`${odPartners.balanceCents} - ${commission.amountCents}`,
+        lifetimeEarningsCents: sql`${odPartners.lifetimeEarningsCents} - ${commission.amountCents}`,
+        updatedAt: new Date(),
+      }).where(eq(odPartners.id, commission.partnerId))
+
+      await tx.insert(odTransactions).values({
+        partnerId: commission.partnerId,
+        type: 'commission_rejected',
+        amountCents: -commission.amountCents,
+        commissionId: commission.id,
+        description: reason || `Commission ${commission.id} rejected`,
+      })
+
+      await this.emit('commission.rejected', { commission: updated })
+      return updated
     })
-    if (!commission || commission.status !== 'pending') {
-      throw new Error(`Commission not found or not pending: ${commissionId}`)
-    }
-
-    const [updated] = await this.db.update(odCommissions).set({
-      status: 'rejected',
-      rejectedAt: new Date(),
-      rejectionReason: reason,
-    }).where(eq(odCommissions.id, commissionId)).returning()
-
-    // Reverse the balance
-    await this.db.update(odPartners).set({
-      balanceCents: sql`${odPartners.balanceCents} - ${commission.amountCents}`,
-      lifetimeEarningsCents: sql`${odPartners.lifetimeEarningsCents} - ${commission.amountCents}`,
-      updatedAt: new Date(),
-    }).where(eq(odPartners.id, commission.partnerId))
-
-    await this.db.insert(odTransactions).values({
-      partnerId: commission.partnerId,
-      type: 'commission_rejected',
-      amountCents: -commission.amountCents,
-      commissionId: commission.id,
-      description: reason || `Commission ${commission.id} rejected`,
-    })
-
-    await this.emit('commission.rejected', { commission: updated })
-    return updated
   }
 
   /**
    * Reverse commissions for a refunded sale.
-   * Finds the sale by externalId, marks its commissions as rejected with reason "refund".
+   * All reversals happen in a single transaction.
    */
   async refundSale(externalId: string): Promise<{ reversed: number }> {
-    // Find the sale
     const sale = await this.db.query.odSales.findFirst({
       where: eq(odSales.externalId, externalId),
     })
     if (!sale) return { reversed: 0 }
 
-    // Find pending/approved commissions for this sale
     const commissions = await this.db.query.odCommissions.findMany({
       where: and(
         eq(odCommissions.saleId, sale.id),
@@ -418,32 +450,39 @@ export class OneDotEngine {
       ),
     })
 
-    let reversed = 0
+    if (commissions.length === 0) return { reversed: 0 }
+
+    const reversed = await this.db.transaction(async (tx) => {
+      let count = 0
+      for (const commission of commissions) {
+        await tx.update(odCommissions).set({
+          status: 'rejected',
+          rejectedAt: new Date(),
+          rejectionReason: 'refund',
+        }).where(eq(odCommissions.id, commission.id))
+
+        await tx.update(odPartners).set({
+          balanceCents: sql`${odPartners.balanceCents} - ${commission.amountCents}`,
+          lifetimeEarningsCents: sql`${odPartners.lifetimeEarningsCents} - ${commission.amountCents}`,
+          updatedAt: new Date(),
+        }).where(eq(odPartners.id, commission.partnerId))
+
+        await tx.insert(odTransactions).values({
+          partnerId: commission.partnerId,
+          type: 'commission_rejected',
+          amountCents: -commission.amountCents,
+          commissionId: commission.id,
+          description: `Refund reversal — sale ${sale.externalId}`,
+        })
+
+        count++
+      }
+      return count
+    })
+
+    // Events emitted outside transaction
     for (const commission of commissions) {
-      await this.db.update(odCommissions).set({
-        status: 'rejected',
-        rejectedAt: new Date(),
-        rejectionReason: 'refund',
-      }).where(eq(odCommissions.id, commission.id))
-
-      // Reverse partner balance
-      await this.db.update(odPartners).set({
-        balanceCents: sql`${odPartners.balanceCents} - ${commission.amountCents}`,
-        lifetimeEarningsCents: sql`${odPartners.lifetimeEarningsCents} - ${commission.amountCents}`,
-        updatedAt: new Date(),
-      }).where(eq(odPartners.id, commission.partnerId))
-
-      // Ledger entry
-      await this.db.insert(odTransactions).values({
-        partnerId: commission.partnerId,
-        type: 'commission_rejected',
-        amountCents: -commission.amountCents,
-        commissionId: commission.id,
-        description: `Refund reversal — sale ${sale.externalId}`,
-      })
-
       await this.emit('commission.rejected', { commission })
-      reversed++
     }
 
     return { reversed }
@@ -476,7 +515,6 @@ export class OneDotEngine {
   async processAutoApprovals() {
     const now = new Date()
 
-    // Find pending commissions past hold period in programs with autoApprove=true
     const pending = await this.db
       .select({ commission: odCommissions, program: odPrograms })
       .from(odCommissions)

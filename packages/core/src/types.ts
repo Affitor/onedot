@@ -1,6 +1,7 @@
 // ─── Input types (what the client provides) ─────────────────
 
 export interface CreateProgramInput {
+  id?: string // custom ID (e.g. "prg_kyma_referral") — auto-generated if not provided
   name: string
   slug?: string // auto-generated from name if not provided
   description?: string
@@ -13,6 +14,7 @@ export interface CreateProgramInput {
 }
 
 export interface CreatePartnerInput {
+  id?: string // custom ID — auto-generated if not provided
   programId: string
   code?: string // auto-generated if not provided
   name?: string
