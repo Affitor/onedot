@@ -1,5 +1,7 @@
 export { OneDotEngine } from './engine.js'
 export { createDatabase } from './db.js'
 export type { Database } from './db.js'
+export { migrate, migrateStatus, migrateAdopt } from './migrate.js'
+export type { MigrateOptions, MigrateResult } from './migrate.js'
 export * from './schema.js'
 export * from './types.js'

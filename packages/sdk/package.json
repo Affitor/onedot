@@ -1,6 +1,6 @@
 {
   "name": "@one-dot/sdk",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -17,7 +17,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@one-dot/core": "0.1.2"
+    "@one-dot/core": "0.2.0"
   },
   "devDependencies": {
     "typescript": "^5.8.0"

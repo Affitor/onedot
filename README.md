@@ -14,7 +14,7 @@ Requires PostgreSQL. OneDot creates tables prefixed with `od_` in your existing 
 
 ## Quick start
 
-### 1. Initialize
+### 1. Initialize + migrate
 
 ```typescript
 import { OneDot } from '@one-dot/sdk'
@@ -22,16 +22,39 @@ import { OneDot } from '@one-dot/sdk'
 const onedot = new OneDot({
   databaseUrl: process.env.DATABASE_URL,
 })
+
+// Creates od_* tables if they don't exist (idempotent, safe to call every startup)
+await onedot.migrate()
 ```
 
-### 2. Run migrations
+Or use the CLI:
 
 ```bash
-# From the onedot package directory:
-DATABASE_URL=postgres://... npx drizzle-kit push
+# Run migrations
+DATABASE_URL=postgres://... npx onedot migrate
+
+# Preview SQL without executing
+DATABASE_URL=postgres://... npx onedot migrate --dry-run
+
+# Check migration status
+DATABASE_URL=postgres://... npx onedot migrate --status
+
+# Adopt existing tables (if you ran SQL manually before)
+DATABASE_URL=postgres://... npx onedot migrate --adopt
 ```
 
-### 3. Create a program
+Migration behavior is configurable:
+
+```typescript
+const onedot = new OneDot({
+  databaseUrl: process.env.DATABASE_URL,
+  migrate: 'auto',    // auto-migrate on first use (default in dev)
+  // migrate: 'manual',  // throw if tables missing (default in production)
+  // migrate: 'skip',    // don't check
+})
+```
+
+### 2. Create a program
 
 ```typescript
 const program = await onedot.programs.create({

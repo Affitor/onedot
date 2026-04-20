@@ -1,6 +1,6 @@
 {
   "name": "@one-dot/ui",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -17,7 +17,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@one-dot/sdk": "0.1.2",
+    "@one-dot/sdk": "0.2.0",
     "react": "^19.0.0"
   },
   "devDependencies": {

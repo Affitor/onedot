@@ -1,4 +1,4 @@
-import { OneDotEngine, createDatabase } from '@one-dot/core'
+import { OneDotEngine, createDatabase, migrate as runMigrate } from '@one-dot/core'
 import type {
   CreateProgramInput,
   CreatePartnerInput,
@@ -7,6 +7,7 @@ import type {
   RecordSaleInput,
   EventType,
   EventListener,
+  MigrateResult,
 } from '@one-dot/core'
 
 export interface OneDotConfig {
@@ -18,6 +19,15 @@ export interface OneDotConfig {
 
   /** Cloud mode (future): API endpoint. Defaults to https://api.onedot.dev */
   apiUrl?: string
+
+  /**
+   * Migration behavior:
+   * - "auto": run migrations on first use (recommended for development)
+   * - "manual": throw if tables don't exist (recommended for production)
+   * - "skip": don't check or run migrations
+   * Default: "auto" when NODE_ENV !== "production", "manual" otherwise
+   */
+  migrate?: 'auto' | 'manual' | 'skip'
 }
 
 /**
@@ -33,6 +43,9 @@ export interface OneDotConfig {
  */
 export class OneDot {
   private engine: OneDotEngine
+  private databaseUrl: string
+  private migrateMode: 'auto' | 'manual' | 'skip'
+  private migrated = false
 
   programs: ProgramsAPI
   partners: PartnersAPI
@@ -56,6 +69,10 @@ export class OneDot {
       )
     }
 
+    this.databaseUrl = config.databaseUrl
+    this.migrateMode = config.migrate ??
+      (process.env.NODE_ENV === 'production' ? 'manual' : 'auto')
+
     const db = createDatabase(config.databaseUrl)
     this.engine = new OneDotEngine(db)
 
@@ -66,11 +83,17 @@ export class OneDot {
     this.commissions = new CommissionsAPI(this.engine)
   }
 
-  /** Run database migrations (creates od_* tables if they don't exist) */
-  async migrate() {
-    // In MVP, migrations are run via drizzle-kit push or SQL file
-    // This is a placeholder for the programmatic migration API
-    console.log('[onedot] Run migrations with: npx drizzle-kit push')
+  /**
+   * Run database migrations (creates od_* tables if they don't exist).
+   * Safe to call multiple times — idempotent, uses advisory lock for concurrency.
+   */
+  async migrate(): Promise<MigrateResult> {
+    if (this.migrated) {
+      return { applied: 0, currentVersion: 0, message: 'Already migrated this session.' }
+    }
+    const result = await runMigrate(this.databaseUrl)
+    this.migrated = true
+    return result
   }
 
   /** Subscribe to events */
